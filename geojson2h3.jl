@@ -1,7 +1,7 @@
 using LazyJSON, DataFrames, ThreadsX
 geojson = LazyJSON.value(read("data/Lower_layer_Super_Output_Areas_2021_EW_BGC_V3_-6823567593069184824.geojson", String));
 # consider using LazyJSON.value(String(Mmap.mmap(open("filename","r"))))
-H3_RES = 13
+H3_RES = 11
 
 geojson["features"][1]["properties"]
 
@@ -17,6 +17,7 @@ hexdf = reduce(vcat, ThreadsX.map(feat -> begin
     hexstrarray = try
         read(pipeline(addenv(`bun run geojson2h3.js`, "DENO_H3_RES" => H3_RES), stdin=pipe_in), String)
     catch(e)
+        @warn e
         ["0x0"]
     end
     map(x -> (featmeta(feat)..., hex=x,), parse.(UInt64, LazyJSON.value(hexstrarray), base=16))

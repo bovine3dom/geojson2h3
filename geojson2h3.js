@@ -8,4 +8,5 @@ for await (const chunk of Bun.stdin.stream()) {
 }
 const feature = JSON.parse(chunks.reduce((l, r) => l+r, ""))
 
-await Bun.write(Bun.stdout, new TextEncoder().encode(JSON.stringify(geojson2h3.featureToH3Set(feature, parseInt(Bun.env.DENO_H3_RES ?? "5")))))
+await Bun.write(Bun.stdout, new TextEncoder().encode(JSON.stringify(geojson2h3.featureToH3Set(feature, parseInt(Bun.env.DENO_H3_RES ?? "5"), {ensureOutput: true}))))
+// memory leak somewhere? processes don't seem to die
