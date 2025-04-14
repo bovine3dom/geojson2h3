@@ -11,6 +11,8 @@ use clap::Parser;
 struct Args {
     #[arg(short, long, default_value_t = 7)]
     resolution: u8,
+    #[arg(short, long, default_value_t = false, help = "don't compact the output into multiple resolutions")]
+    nocompact: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +50,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cells = tiler.into_coverage().collect::<Vec<_>>();
 
     if !cells.is_empty() {
-        CellIndex::compact(&mut cells)?;
+        if !args.nocompact {
+            CellIndex::compact(&mut cells)?;
+        }
     } else {
          eprintln!("Warning: No H3 cells generated for the input geometry at resolution {}.", args.resolution);
     }

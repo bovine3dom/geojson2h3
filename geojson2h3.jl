@@ -18,7 +18,8 @@ pmp_only = filter(f->in(f["geometry"]["type"], ["Polygon", "MultiPolygon"]), fea
 function featureToH3Redux(feature; res=10)
     try
         buffer = IOBuffer()
-        open(`./rust/target/release/geojson_to_h3_rs -r$res`, "w", buffer) do io
+        open(`./rust/target/release/geojson_to_h3_rs -r$res --nocompact`, "w", buffer) do io
+        # open(`./rust/target/release/geojson_to_h3_rs -r$res`, "w", buffer) do io
             println(io, JSON.json(feature)) # easter egg: polygonToCells will take a geojson fragment from Julia, but it's slower
         end
         return parse.(UInt64, split(String(take!(buffer)), ","), base=16)
@@ -27,16 +28,21 @@ function featureToH3Redux(feature; res=10)
     end
 end
 
-a = ThreadsX.map(f -> featureToH3Redux(f, res=9), pmp_only) 
+res = 9
+a = ThreadsX.map(f -> featureToH3Redux(f, res=res), pmp_only)
 for _ in 1:3 # one iteration is enough but why risk it
     Threads.@threads for (k, v) in collect(enumerate(a))
         if length(v) == 0
-            a[k] = featureToH3Redux(pmp_only[k], res=9)
+            a[k] = featureToH3Redux(pmp_only[k], res=res)
         end
     end
 end
 
-flatten(DataFrame(PCON24CD=map(f->f["properties"]["PCON24CD"], pmp_only), h3=a), :h3)
+df = flatten(DataFrame(PCON24CD=map(f->f["properties"]["PCON24CD"], pmp_only), h3=a, value=rand(length(a))), :h3)
+df.index = string.(df.h3, base=16)
+# df.value = rand(size(df, 1))
+using CSV
+CSV.write("$(homedir())/projects/H3-MON/www/data/h3_data.csv", df[:, [:index, :value]])
 
 function featureToH3(feature)
     buffer = IOBuffer()
