@@ -7,6 +7,13 @@ h3 polygonToCells --help
 ./geojson2h3.jl input.geojson output.arrow
 ```
 
+or
+
+```
+cd rust
+cargo build -j8 --release
+```
+
 
 # example: inspire polygons
 

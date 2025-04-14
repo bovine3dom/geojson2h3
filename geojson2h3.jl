@@ -2,21 +2,47 @@
 
 # usage: ./geojson2h3.jl input.geojson output.arrow
 
-using JSON, DataFrames, Statistics, Arrow
+using JSON, DataFrames, Statistics, Arrow, ThreadsX
 
 infile = ARGS[1]
 outfile = ARGS[2]
+
+# infile = "data/PCON_MAY_2024_UK_BFE_1900571613665677527.geojson"
 
 # readchomp(`h3 polygonToCells --help`) |> print
 
 geo = JSON.parsefile(infile)
 features = geo["features"]
 
+pmp_only = filter(f->in(f["geometry"]["type"], ["Polygon", "MultiPolygon"]), features)
+function featureToH3Redux(feature; res=10)
+    try
+        buffer = IOBuffer()
+        open(`./rust/target/release/geojson_to_h3_rs -r$res`, "w", buffer) do io
+            println(io, JSON.json(feature)) # easter egg: polygonToCells will take a geojson fragment from Julia, but it's slower
+        end
+        return parse.(UInt64, split(String(take!(buffer)), ","), base=16)
+    catch(e)
+        return UInt64[] # fails sometimes when multithreaded :(((
+    end
+end
+
+a = ThreadsX.map(f -> featureToH3Redux(f, res=9), pmp_only) 
+for _ in 1:3 # one iteration is enough but why risk it
+    Threads.@threads for (k, v) in collect(enumerate(a))
+        if length(v) == 0
+            a[k] = featureToH3Redux(pmp_only[k], res=9)
+        end
+    end
+end
+
+flatten(DataFrame(PCON24CD=map(f->f["properties"]["PCON24CD"], pmp_only), h3=a), :h3)
+
 function featureToH3(feature)
     buffer = IOBuffer()
     geoms = feature["geometry"]["coordinates"]
     geoms_rev = map(x -> reverse.(x), geoms) # easter egg: opposite to geojson
-    open(`h3 polygonToCells -r 15 -i --`, "w", buffer) do io
+    open(`h3 polygonToCells -r 9 -i --`, "w", buffer) do io
         println(io, geoms_rev) # easter egg: polygonToCells will take a geojson fragment from Julia, but it's slower
     end
     return take!(buffer) |> String |> JSON.parse
@@ -36,13 +62,15 @@ function bboxarea(bbox)
 end
 
 
-h3s = Dict{Int, Vector{Any}}()
-area_cutoff = quantile(map(f -> (bboxarea∘bbox)(f["geometry"]["coordinates"][1]), features), 0.99)
-length_cutoff = quantile(map(f -> length(f["geometry"]["coordinates"][1]), features),0.99)
+h3s = Dict{String, Vector{Any}}()
+# area_cutoff = quantile(map(f -> (bboxarea∘bbox)(f["geometry"]["coordinates"][1]), features), 0.99)
+# length_cutoff = quantile(map(f -> length(f["geometry"]["coordinates"][1]), features),0.99)
 for feature in features # multithreading doesn't work :(
-    (any(map(>(area_cutoff)∘bboxarea∘bbox, feature["geometry"]["coordinates"])) || any(map(>(length_cutoff)∘length, feature["geometry"]["coordinates"]))) && continue # skip big polygons
+    # (any(map(>(area_cutoff)∘bboxarea∘bbox, feature["geometry"]["coordinates"])) || any(map(>(length_cutoff)∘length, feature["geometry"]["coordinates"]))) && continue # skip big polygons
     try
-        h3s[feature["properties"]["INSPIREID"]] = featureToH3(feature)
+        @info (feature["properties"]["PCON24CD"], feature["properties"]["PCON24NM"])
+        h3s[feature["properties"]["PCON24CD"]] = featureToH3(feature)
+        @info (feature["properties"]["PCON24CD"], "done")
     catch (e)
         @warn e
     end

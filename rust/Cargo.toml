@@ -1,0 +1,10 @@
+[package]
+name = "geojson_to_h3_rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = {version = "4.5.36", features = ["derive"]}
+geo-types = "0.7.16"
+geojson = "0.24.2"
+h3o = { version = "0.8", features = ["geo"] }
