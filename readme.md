@@ -1,34 +1,20 @@
 # rough script for converting geojson files to arrow files of h3 cells using the h3 CLI
 
-requires h3 on the PATH
-```
-yay -S h3-git
-h3 polygonToCells --help
-./geojson2h3.jl input.geojson output.arrow
-```
-
-or
+prep:
 
 ```
+juliaup add 1.9.4
+julia +1.9.4 --project=. -e 'using Pkg; Pkg.activate("."); Pkg.instantiate()'
 cd rust
 cargo build -j8 --release
+cd ..
 ```
 
 
-# example: inspire polygons
+# usage 
 
-takes a while
+e.g. fuas
 
 ```
-mkdir out/
-ls ~/projects/inspire/data/*.geojson | parallel -j12 --bar --eta 'julia --project=. geojson2h3.jl {} out/{/.}.arrow'
-# {//} is the directory name, {/.} is the file name without extension, {} is the whole path
+julia +1.9.4 --project=. --threads auto geojson2h3.jl -r 12 -k'fuacode' --compact fuas_oecd_core.geojson fuas.arrow^
 ```
-
-check for entirely missing ones
-
-```fish
-ls (comm -3 (ls ~/projects/inspire/data/*.geojson | xargs basename -s .geojson | sort | psub) (ls out/*.arrow | xargs basename -s .arrow | sort | psub) | sed 's,.*,/home/oliver/projects/inspire/data/&.geojson,') | parallel -j12 --bar --eta 'julia --project=. geojson2h3.jl {} out/{/.}.arrow'
-``` 
-
-todo: log failed IDs
