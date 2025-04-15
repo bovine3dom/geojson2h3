@@ -18,3 +18,9 @@ e.g. fuas
 ```
 julia +1.9.4 --project=. --threads auto geojson2h3.jl -r 12 -k'fuacode' --compact fuas_oecd_core.geojson fuas.arrow^
 ```
+
+e.g. loads of geojsons
+
+```
+ls $HOME/projects/inspire/data/*.geojson | parallel -j3 --bar --eta 'julia +1.9.4 --threads=2 --project=. geojson2h3.jl -r15 --compact -k"INSPIREID" --keytype="UInt32" {} out/{/.}.arrow &> /dev/null'
+```
