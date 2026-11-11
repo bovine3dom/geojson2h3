@@ -42,14 +42,34 @@ function settings()
     return s
 end
 
+parse_cells(output) = isempty(output) ? UInt64[] : parse.(UInt64, split(output, ','), base=16)
+
 function feature_to_h3(feature, cmd, key)
     properties = get(feature, "properties", nothing)
     label = properties isa AbstractDict ? get(properties, key, "<missing>") : "<missing>"
     try
         output = strip(read(pipeline(cmd; stdin=IOBuffer(JSON.json(feature))), String))
-        return isempty(output) ? UInt64[] : parse.(UInt64, split(output, ','), base=16)
+        return parse_cells(output)
     catch e
         error("Conversion failed for $key=$(repr(label)): $(sprint(showerror, e))")
+    end
+end
+
+function features_to_h3(features, cmd, key)
+    isempty(features) && return Vector{UInt64}[]
+    try
+        input = join((JSON.json(feature) for feature in features), '\n') * "\n"
+        output = read(pipeline(`$cmd --stream`; stdin=IOBuffer(input)), String)
+        endswith(output, '\n') || error("Missing Rust record terminator")
+        records = split(chop(output), '\n'; keepempty=true)
+        length(records) == length(features) || error("Rust record count mismatch")
+        return map(parse_cells, records)
+    catch e
+        labels = map(features) do feature
+            properties = get(feature, "properties", nothing)
+            properties isa AbstractDict ? get(properties, key, "<missing>") : "<missing>"
+        end
+        error("Batch conversion failed for $key=$(repr(labels)): $(sprint(showerror, e))")
     end
 end
 
@@ -75,8 +95,9 @@ function convert_features(features, writer, args, cmd, key_parser)
             key_parser(properties[key])
         end
         cells = Vector{Vector{UInt64}}(undef, length(batch))
-        Threads.@threads for i in eachindex(batch)
-            cells[i] = feature_to_h3(batch[i], cmd, key)
+        chunks = collect(Iterators.partition(eachindex(batch), 64))
+        Threads.@threads for indices in chunks
+            cells[indices] = features_to_h3(batch[indices], cmd, key)
         end
         output_keys = eltype(keys)[]
         output_cells = UInt64[]

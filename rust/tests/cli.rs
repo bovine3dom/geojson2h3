@@ -18,6 +18,10 @@ fn ring(x: f64, y: f64, half: f64) -> Vec<Vec<f64>> {
 
 fn run(value: Value, options: &[&str]) -> Output {
     let input = Geometry::new(value).to_string().replace(",", " ,\n");
+    run_input(&input, options)
+}
+
+fn run_input(input: &str, options: &[&str]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_geojson_to_h3_rs"))
         .args(["-r8"])
         .args(options)
@@ -138,6 +142,119 @@ fn malformed_or_unsupported_geometry_fails_without_a_panic() {
         assert!(output.stdout.is_empty());
         assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
     }
+}
+
+#[test]
+fn polygon_only_ignores_collapsed_contours_and_keeps_polygon_components() {
+    let line = Value::LineString(vec![
+        vec![-5.7011948, 43.4946318],
+        vec![-5.7011988, 43.4947218],
+    ]);
+    for value in [
+        line.clone(),
+        Value::Point(vec![2.35, 48.85]),
+        Value::MultiPolygon(vec![]),
+    ] {
+        let output = run_input(
+            &Geometry::new(value).to_string(),
+            &["--polygon-only", "--stream"],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"\n");
+    }
+    let polygon = Value::Polygon(vec![ring(2.35, 48.85, 0.02)]);
+    let collection = Value::GeometryCollection(vec![
+        Geometry::new(line),
+        Geometry::new(Value::GeometryCollection(vec![Geometry::new(
+            polygon.clone(),
+        )])),
+    ]);
+    assert_eq!(cells(collection, &["--polygon-only"]), cells(polygon, &[]));
+    let invalid = Value::Polygon(vec![ring(2.35, 100.0, 0.01)]);
+    assert!(!run(invalid, &["--polygon-only"]).status.success());
+}
+
+#[test]
+fn stream_preserves_empty_records_and_matches_single_mode() {
+    let small = Value::Polygon(vec![ring(2.35, 48.85, 0.000001)]);
+    let large = Value::Polygon(vec![ring(2.35, 48.85, 0.02)]);
+    let values = [small.clone(), large.clone(), small.clone(), large, small];
+    let input = values
+        .iter()
+        .map(|value| Geometry::new(value.clone()).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let expected = values
+        .into_iter()
+        .map(|value| {
+            String::from_utf8(run(value, &["--nocompact", "--containment", "center"]).stdout)
+                .unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let output = run_input(
+        &input,
+        &["--stream", "--nocompact", "--containment", "center"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn stream_errors_identify_the_record_and_properties() {
+    let valid = Geometry::new(Value::Polygon(vec![ring(2.35, 48.85, 0.02)])).to_string();
+    let invalid = r#"{"type":"Feature","properties":{"id":7},"geometry":null}"#;
+    let output = run_input(&format!("{valid}\n{invalid}\n"), &["--stream"]);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("Input record 2"));
+    assert!(error.contains("id") && error.contains('7'));
+    let output = run_input(&format!("{valid}\nnot JSON\n"), &["--stream"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Input record 2"));
+}
+
+#[test]
+fn keyed_stream_preserves_json_keys_and_empty_coverage() {
+    let geometry = Geometry::new(Value::Polygon(vec![ring(2.35, 48.85, 0.000001)])).to_string();
+    let input = format!(
+        r#"{{"type":"Feature","properties":{{"band":"A\tB"}},"geometry":{geometry}}}
+{{"type":"Feature","properties":{{"band":7}},"geometry":{geometry}}}
+"#
+    );
+    let output = run_input(
+        &input,
+        &["--stream", "--key", "band", "--containment", "center"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "\"A\\tB\"\t\n7\t\n"
+    );
+    let output = run_input(&input, &["--stream", "--key", "missing"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Missing feature property missing"));
+}
+
+#[test]
+fn empty_stream_succeeds_without_output() {
+    let output = run_input("", &["--stream"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
 }
 
 #[test]

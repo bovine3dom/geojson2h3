@@ -5,7 +5,7 @@ use h3o::{
     geom::{ContainmentMode, TilerBuilder},
     CellIndex, Resolution,
 };
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read, Write};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Containment {
@@ -22,6 +22,22 @@ struct Args {
     nocompact: bool,
     #[arg(long, value_enum, default_value = "overlap")]
     containment: Containment,
+    #[arg(
+        long,
+        help = "Read one GeoJSON object per line and write one cell list per line"
+    )]
+    stream: bool,
+    #[arg(
+        long,
+        requires = "stream",
+        help = "Prefix each cell list with the JSON property value and a tab"
+    )]
+    key: Option<String>,
+    #[arg(
+        long,
+        help = "Ignore non-polygon geometry and empty polygon components"
+    )]
+    polygon_only: bool,
 }
 
 fn cover(
@@ -29,12 +45,24 @@ fn cover(
     resolution: Resolution,
     containment: Containment,
     compact: bool,
+    polygon_only: bool,
 ) -> Result<Vec<CellIndex>, Box<dyn std::error::Error>> {
-    let polygons = match geometry {
-        Geometry::Polygon(polygon) => vec![polygon],
-        Geometry::MultiPolygon(polygons) if !polygons.0.is_empty() => polygons.0,
-        _ => return Err("Expected a non-empty Polygon or MultiPolygon".into()),
-    };
+    let mut pending = vec![geometry];
+    let mut polygons = Vec::new();
+    while let Some(geometry) = pending.pop() {
+        match geometry {
+            Geometry::Polygon(polygon) => polygons.push(polygon),
+            Geometry::MultiPolygon(parts) if polygon_only || !parts.0.is_empty() => {
+                polygons.extend(parts.0);
+            }
+            Geometry::GeometryCollection(parts) if polygon_only => pending.extend(parts.0),
+            _ if polygon_only => {}
+            _ => return Err("Expected a non-empty Polygon or MultiPolygon".into()),
+        }
+    }
+    if polygon_only {
+        polygons.retain(|polygon| !polygon.exterior().0.is_empty());
+    }
     let mode = match containment {
         Containment::Center => ContainmentMode::ContainsCentroid,
         Containment::Overlap => ContainmentMode::Covers,
@@ -63,21 +91,65 @@ fn cover(
     Ok(cells)
 }
 
+fn convert(
+    input: &str,
+    args: &Args,
+) -> Result<(Vec<CellIndex>, Option<String>), Box<dyn std::error::Error>> {
+    let mut json = input.parse::<GeoJson>()?;
+    let properties = match &mut json {
+        GeoJson::Feature(feature) => feature.properties.take(),
+        _ => None,
+    };
+    let result: Result<_, Box<dyn std::error::Error>> = (|| {
+        let key = args
+            .key
+            .as_ref()
+            .map(|name| {
+                properties
+                    .as_ref()
+                    .and_then(|values| values.get(name))
+                    .map(ToString::to_string)
+                    .ok_or_else(|| format!("Missing feature property {name}"))
+            })
+            .transpose()?;
+        let cells = cover(
+            Geometry::<f64>::try_from(json)?,
+            Resolution::try_from(args.resolution)?,
+            args.containment,
+            !args.nocompact,
+            args.polygon_only,
+        )?;
+        Ok((cells, key))
+    })();
+    result.map_err(|error| format!("{error}; properties: {properties:?}").into())
+}
+
+fn format_cells(cells: &[CellIndex]) -> String {
+    let cells: Vec<_> = cells.iter().map(|cell| format!("{cell:x}")).collect();
+    cells.join(",")
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    let geometry = Geometry::<f64>::try_from(input.parse::<GeoJson>()?)?;
-    let cells = cover(
-        geometry,
-        Resolution::try_from(args.resolution)?,
-        args.containment,
-        !args.nocompact,
-    )?;
-    if cells.is_empty() {
-        eprintln!("Warning: No cells at resolution {}", args.resolution);
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    if args.stream {
+        for (index, line) in io::stdin().lock().lines().enumerate() {
+            let (cells, key) = convert(&line?, &args)
+                .map_err(|error| format!("Input record {}: {error}", index + 1))?;
+            if let Some(key) = key {
+                write!(output, "{key}\t")?;
+            }
+            writeln!(output, "{}", format_cells(&cells))?;
+        }
+    } else {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        let (cells, _) = convert(&input, &args)?;
+        if cells.is_empty() {
+            eprintln!("Warning: No cells at resolution {}", args.resolution);
+        }
+        write!(output, "{}", format_cells(&cells))?;
     }
-    let cells: Vec<_> = cells.iter().map(|cell| format!("{cell:x}")).collect();
-    print!("{}", cells.join(","));
+    output.flush()?;
     Ok(())
 }

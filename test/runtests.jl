@@ -94,6 +94,20 @@ end
     end
 end
 
+@testset "Batched subprocess records" begin
+    command = `$BINARY -r8 --nocompact --containment center`
+    tiny = feature(1; half=0.000001)
+    features = [tiny, feature(2), tiny, feature(4), tiny]
+    expected = [feature_to_h3(f, command, "id") for f in features]
+    @test features_to_h3(features, command, "id") == expected
+    @test features_to_h3([tiny, tiny, tiny], command, "id") == [UInt64[], UInt64[], UInt64[]]
+    @test isempty(features_to_h3([], command, "id"))
+    incomplete = `sh -c 'while IFS= read -r line; do :; done; printf garbage'`
+    extra = `sh -c 'while IFS= read -r line; do :; done; printf "\\n\\n"'`
+    @test_throws ErrorException features_to_h3([tiny], incomplete, "id")
+    @test_throws ErrorException features_to_h3([tiny], extra, "id")
+end
+
 @testset "Threaded subprocess stress" begin
     features = [feature(i; half=0.05) for i in 1:256]
     command = `$BINARY -r10 --nocompact --containment overlap`
@@ -104,4 +118,9 @@ end
     end
     @test all(==(expected), results)
     @test length(expected) * 16 > 64 * 1024
+    chunks = collect(Iterators.partition(eachindex(features), 64))
+    Threads.@threads for indices in chunks
+        results[indices] = features_to_h3(features[indices], command, "id")
+    end
+    @test all(==(expected), results)
 end
